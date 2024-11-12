@@ -1,10 +1,12 @@
 import boto3 
+import json
 from colorama import Fore, Style , init
 
 
 class aws_iam_audit:
     def __init__(self):
         self.iam_client = boto3.client('iam')
+        self.audit_results = []
 
     def get_users(self):
         """
@@ -17,61 +19,98 @@ class aws_iam_audit:
     
 
 
-    def get_keys(self):
+    def get_keys(self, username):
         """
         Retrieve a list of access keys.
 
         Returns:
             list: A list of dictionaries where each dictionary contains information about an access key.
         """
-        return self.iam_client.list_access_keys()['AccessKeyMetadata']
+        return self.iam_client.list_access_keys(UserName=username)['AccessKeyMetadata']
     
 
-    def get_mfa_status(self, username):
-         if self.iam_client.list_mfa_devices(UserName=username)['MFADevices']:
+    def get_mfa_status(self, username):         
+        """
+        Check the MFA status of a given IAM user.
+
+        Args:
+            username (str): The username of the IAM user to check.
+
+        Returns:
+            str: A string indicating the MFA status of the user. The string will be either
+                "Enabled" (green) or "Disabled" (red).
+        """
+        if self.iam_client.list_mfa_devices(UserName=username)['MFADevices']:
              return f"{Fore.GREEN}Enabled{Style.RESET_ALL}"
-         else:
+        else:
              return f"{Fore.RED}Disabled{Style.RESET_ALL}"
+    def save_to_file(self, filename="iam_audit.json"):
+        """Save audit results to a JSON file."""
+        if not self.audit_results:
+            print("No audit results to save. Run the audit first.")
+            return
 
+        with open(filename, 'w') as f:
+            json.dump(self.audit_results, f, indent=4, default=str)
+        print(f"Audit results saved to {filename}")
 
-    def iam_audit(self):
+    
+    def print_results(self):
+        """Print audit results to the console."""
+        if not self.audit_results:
+            print("No audit results to display. Run the audit first.")
+            return
+        
+        for user_data in self.audit_results:
+            print(f"\nUser: {user_data['UserName']}")
+            print(f"    - MFA Status: {user_data['MFAStatus']}")
+            for key in user_data['AccessKeys']:
+                print(f"    - Access Key ID: {key['AccessKeyId']}")
+                print(f"      Status: {key['Status']}")
+                print(f"      Last Used Date: {key['LastUsedDate']}")
+                print(f"      Last Used Region: {key['Region']}")
+                print(f"      Last Used Service: {key['Service']}")
+        print("\nAudit results displayed.")
+        
+
+    def run_audit(self):
+        """Perform IAM audit for each user, checking MFA and access key information."""
+        self.audit_results = []  # Reset results each time the audit is run
         users = self.get_users()
+        
         for user in users:
             username = user['UserName']
-            print(f"User: {username}")
+            user_data = {
+                "UserName": username,
+                "MFAStatus": self.get_mfa_status(username),
+                "AccessKeys": []
+            }
             
-            # Check if MFA is enabled for the user
-            mfa_status = self.get_mfa_status(username)
-            print(f"    - MFA Status: {mfa_status}")
-            print("\n")
-            
-            # Use get_keys to retrieve access keys for each user
-            access_keys = self.get_keys()
+            # Retrieve access keys for the user
+            access_keys = self.get_keys(username)
             
             for key in access_keys:
                 access_key_id = key['AccessKeyId']
-                print(f"    - Access Key ID: {access_key_id}")
-                print(f"    - Access Key Status: {key['Status']}")
                 
                 # Retrieve last used information for each access key
                 last_used_info = self.iam_client.get_access_key_last_used(AccessKeyId=access_key_id)
                 
-                # Extract and print last used date, region, and service if available
-                if 'LastUsedDate' in last_used_info['AccessKeyLastUsed']:
-                    last_used_date = last_used_info['AccessKeyLastUsed']['LastUsedDate']
-                    region = last_used_info['AccessKeyLastUsed'].get('Region', 'N/A')
-                    service = last_used_info['AccessKeyLastUsed'].get('ServiceName', 'N/A')
-                    print(f"    - Last Used Date: {last_used_date}")
-                    print(f"    - Last Used Region: {region}")
-                    print(f"    - Last Used Service: {service}")
-                    print("\n")
-                else:
-                    print("    - Last Used: Never used")
-                    print("\n")
-            print("\n")
-
-
-# Run the audit
-if __name__ == "__main__":
-    audit = aws_iam_audit()
-    audit.iam_audit()
+                # Extract last used date, region, and service if available
+                last_used_date = last_used_info['AccessKeyLastUsed'].get('LastUsedDate', 'Never used')
+                region = last_used_info['AccessKeyLastUsed'].get('Region', 'N/A')
+                service = last_used_info['AccessKeyLastUsed'].get('ServiceName', 'N/A')
+                
+                # Append access key details to user data
+                user_data["AccessKeys"].append({
+                    "AccessKeyId": access_key_id,
+                    "Status": key['Status'],
+                    "LastUsedDate": last_used_date,
+                    "Region": region,
+                    "Service": service
+                })
+            
+            # Add user data to audit results
+            self.audit_results.append(user_data)
+        
+        print("Audit complete.")
+        self.print_results()
